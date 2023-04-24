@@ -1,0 +1,6 @@
+{
+    "sketch": "Buddi.ino",
+    "output": "build",
+    "board": "arduino:mbed_nano:nano33ble",
+    "port": "/dev/tty.usbmodem14201"
+}
