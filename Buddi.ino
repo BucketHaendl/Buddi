@@ -31,13 +31,13 @@
 #define SCREEN_HEIGHT 64 // display height, in pixels
 #define OLED_RESET -1 // reset pin or -1, for Arduino pin
 #define SCREEN_ADDRESS 0x3C // display I2C address
-#define CHARS_PER_BITMAP = 1024; // number of chars in PROGMEM per bitmap image
-#define COLOR_MODE = WHITE; // color theme of the on-screen objects
-#define COLOR_HIGHLIGHT = BLACK; // color highlight color for important information
+#define CHARS_PER_BITMAP 1024 // number of chars in PROGMEM per bitmap image
+#define COLOR_MODE WHITE // color theme of the on-screen objects
+#define COLOR_HIGHLIGHT BLACK // color highlight color for important information
 
-#define LEFT_BUTTON = A01; // define left button
-#define MIDDLE_BUTTON = A02; // define middle button
-#define RIGHT_BUTTON = A03; // define right button
+const int LEFT_BUTTON = 0; // define left button
+const int MIDDLE_BUTTON = 0; // define middle button
+const int RIGHT_BUTTON = 0; // define right button
 
 /**
  * BITMAP (IMAGE) DECLARATION SECTION
@@ -181,13 +181,13 @@ unsigned char epd_bitmap_tama1[CHARS_PER_BITMAP] PROGMEM = {
  * CONSTANT DECLARATION SECTION
 */
 // Create OLED display object with given constraints
-const Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, OLED_RESET);
+Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, OLED_RESET);
 
 // Create game constants
 const int nAxes = 2; // Number of axes to fully describe a location, here 2 (room number and location in the room)
 const int nRooms = 3; // Number of rooms (0 = left office, 1 = right office, 2 = garden)
-const char roomBackgrounds[nRooms] = {epd_bitmap_tama0, epd_bitmap_tama0, epd_bitmap_tama0}; // Define backgrounds for each room (drawn behind player)
-const char roomForegrounds[nRooms] = {epd_bitmap_tama0, epd_bitmap_tama0, epd_bitmap_tama0}; // Define foregrounds for each room (drawn on top of player)
+const unsigned char* roomBackgrounds[nRooms] = {epd_bitmap_tama0, epd_bitmap_tama0, epd_bitmap_tama0}; // Define backgrounds for each room (drawn behind player), because these are actually pointers at this point
+const unsigned char* roomForegrounds[nRooms] = {epd_bitmap_tama0, epd_bitmap_tama0, epd_bitmap_tama0}; // Define foregrounds for each room (drawn on top of player), because these are actually pointers at this point
 
 const int nLocsPerRoom = 3; // Number of distinct player locations you can walk to per room (0 = left, 1 = middle, 2 = right, per each room)
 const int roomWidth = SCREEN_WIDTH; // Width of a room frame
@@ -201,7 +201,7 @@ const int playerAvatarYOffset = 0; // Offset in frame from y axis of own player
 const int othersAvatarYOffset = 10; // Offset in frame from y axis of other players
 const int avatarWidth = 42; // Width of an avatar frame
 const int avatarHeigth = 42; // Height of an avatar frame
-const char allAvatars[nAvatars] = {epd_bitmap_tama0, epd_bitmap_tama0, epd_bitmap_tama0, epd_bitmap_tama0}; // Base avatar characters
+const unsigned char* allAvatars[nAvatars] = {epd_bitmap_tama0, epd_bitmap_tama0, epd_bitmap_tama0, epd_bitmap_tama0}; // Base avatar characters
 
 const int animationSpeed = 50; // Screen is refreshed every x milliseconds (implemented as a delay at the end of the main loop)
 const short frameSpeed = 0.1; // Relative frame speed (sub-stepping of animation speed), so every loop, the frame counter is increased by x. This makes it possible to advance the frame counter slowly while allowing for faster animations (like walking or not blocking the menu)
@@ -209,9 +209,9 @@ const short walkingSpeed = 0.1; // Relative walking speed while holding down but
 const int nFrames = 2; // Number of frames an animation consists of
 const int nAnimations = 2; // Number of animations implemented in current version
 const int nMaxRepetitions = 3; // How many times non-repetitive animations are being repeated
-const char workingAnimation[nAvatars][nFrames] = {{epd_bitmap_tama0, epd_bitmap_tama0},{epd_bitmap_tama0, epd_bitmap_tama0},{epd_bitmap_tama0, epd_bitmap_tama0},{epd_bitmap_tama0, epd_bitmap_tama0}}; // Frames of working animation of all avatars
-const char flowersAnimation[nAvatars][nFrames] = {{epd_bitmap_tama0, epd_bitmap_tama0},{epd_bitmap_tama0, epd_bitmap_tama0},{epd_bitmap_tama0, epd_bitmap_tama0},{epd_bitmap_tama0, epd_bitmap_tama0}}; // Frames of giving flowers animation of all avatars
-const char allAnimations[nAnimations][nAvatars][nFrames] = {workingAnimation, flowersAnimation}; // Animation look up array
+const unsigned char* workingAnimation[nAvatars][nFrames] = {{epd_bitmap_tama0, epd_bitmap_tama0},{epd_bitmap_tama0, epd_bitmap_tama0},{epd_bitmap_tama0, epd_bitmap_tama0},{epd_bitmap_tama0, epd_bitmap_tama0}}; // Frames of working animation of all avatars
+const unsigned char* flowersAnimation[nAvatars][nFrames] = {{epd_bitmap_tama0, epd_bitmap_tama0},{epd_bitmap_tama0, epd_bitmap_tama0},{epd_bitmap_tama0, epd_bitmap_tama0},{epd_bitmap_tama0, epd_bitmap_tama0}}; // Frames of giving flowers animation of all avatars
+const unsigned char* (*allAnimations[nAnimations])[nAvatars][nFrames] = {&workingAnimation, &flowersAnimation}; // Animation look up array
 const bool repeatTypeAnimations[nAnimations] = {true, false}; // Whether the type of animation is a repeat one or execute once
 
 const int nMaxOthers = 3; // Maximum number of other players
@@ -221,7 +221,7 @@ const int nameWidth = 24; // Width of the name initials rectangle above characte
 const int nameHeight = 24; // Height of the name initials rectangle above characters' heads
 
 const int nActionMenuItemLabels = 3; // Total number of menu items in the action menu
-const string actionMenuItemLabels[nActionMenuItemLabels] = {"Work", "Give Flowers", "Cancel"}; // String labels for each action item
+const String actionMenuItemLabels[nActionMenuItemLabels] = {"Work", "Give Flowers", "Cancel"}; // String labels for each action item
 const int actionMenuItemLabelHeight = 32; // Number of pixels each action item is high
 const int actionMenuItemLabelMargin = 4; // Margin to the screen for each action menu item
 const int actionMenuItemLabelFontSize = 1; // Font size for the label
@@ -243,8 +243,8 @@ int currentOthersLocs[nMaxOthers][nAxes] = {{0, 0}, {0, 0}, {0, 0}};
 int currentPlayerAvatar = 0; // Which avatar the player has currently selected
 int currentOthersAvatars[nMaxOthers] = {0, 0, 0}; // Which avatars the other players have selected
 
-string currentPlayerName = ""; // Name initials of the current player
-string currentOthersNames[nMaxOthers] = {"", "", ""}; // Name initials of the current player
+String currentPlayerName = ""; // Name initials of the current player
+String currentOthersNames[nMaxOthers] = {"", "", ""}; // Name initials of the current player
 
 int currentPlayerAnimation = 0; // Which animation the player is currently executing
 int currentPlayerPreviousAnimation = 0; // Which looped animation was executing before
@@ -303,15 +303,15 @@ void loop() {
       continue;
     }
 
-    int otherAvatar = s[i]; // Select other player's avatar
+    int otherAvatar = currentOthersAvatars[i]; // Select other player's avatar
     int otherAvatarAnimation = currentOthersAnimation[i]; // Select other player's current animation
 
     // Draw other avatar with respective animation
-    int otherAvatarCalculatedX = othersRoomLocs[currentRoom][currentOthersLocs[i][1]]+othersRoomLocsOffset*i
-    display.drawBitmap(otherAvatarCalculatedX, othersAvatarYOffset, allAnimations[otherAvatarAnimation][otherAvatar][currentFrame], avatarWidth, avatarHeigth, COLOR_MODE);
+    int otherAvatarCalculatedX = othersRoomLocs[currentRoom][currentOthersLocs[i][1]]+othersRoomLocsOffset*i;
+    display.drawBitmap(otherAvatarCalculatedX, othersAvatarYOffset, (*allAnimations[otherAvatarAnimation])[otherAvatar][currentFrame], avatarWidth, avatarHeigth, COLOR_MODE);
 
     // Draw other name initials above the avatar in a blanc rectangle
-    string otherName = currentOthersNames[i];
+    String otherName = currentOthersNames[i];
     display.drawRect(otherAvatarCalculatedX, othersAvatarYOffset, nameWidth, nameHeight, COLOR_HIGHLIGHT);
     display.setCursor(otherAvatarCalculatedX, othersAvatarYOffset);
     display.setTextSize(1);
@@ -344,8 +344,8 @@ void loop() {
   }
 
   // Draw own player's avatar with animation in current frame
-  int playerAvatarCalculatedX = playerRoomLocs[currentRoom][currentLoc]
-  display.drawBitmap(playerAvatarCalculatedX, playerAvatarYOffset,  allAnimations[currentPlayerAnimation][currentPlayerAvatar][currentFrame], avatarWidth, avatarHeigth, COLOR_MODE);
+  int playerAvatarCalculatedX = playerRoomLocs[currentRoom][currentLoc];
+  display.drawBitmap(playerAvatarCalculatedX, playerAvatarYOffset,  (*allAnimations[currentPlayerAnimation])[currentPlayerAvatar][currentFrame], avatarWidth, avatarHeigth, COLOR_MODE);
 
   // Draw own player's name initials above the avatar in a blanc rectangle
   display.drawRect(playerAvatarCalculatedX, playerAvatarYOffset, nameWidth, nameHeight, COLOR_HIGHLIGHT);
@@ -360,9 +360,9 @@ void loop() {
   // If not repeated, increase the counter and potentially kick out animation
   if(!playerAvatarAnimationRepeat) {
 
-    currentPlayerAnimationRepeatCounter[i] += 1; // Increase non-repeat animation counter by 1
-    if(currentPlayerAnimationRepeatCounter[i]>=nMaxRepetitions*nFrames) {
-      currentPlayerAnimation[i] = currentPlayerPreviousAnimation[i]; // If non-repeat animation has been repeated enough times, loop back to default animation
+    currentPlayerAnimationRepeatCounter += 1; // Increase non-repeat animation counter by 1
+    if(currentPlayerAnimationRepeatCounter>=nMaxRepetitions*nFrames) {
+      currentPlayerAnimation = currentPlayerPreviousAnimation; // If non-repeat animation has been repeated enough times, loop back to default animation
     }
 
   }
@@ -370,9 +370,9 @@ void loop() {
   // If repeated, potentially assign this animation as he previous one to return to if anything happens
   else {
 
-    if(currentPlayerPreviousAnimation[i] != currentPlayerAnimation[i]) {
-      currentPlayerPreviousAnimation[i] = currentPlayerAnimation[i];
-      currentPlayerAnimationRepeatCounter[i] = 0;
+    if(currentPlayerPreviousAnimation != currentPlayerAnimation) {
+      currentPlayerPreviousAnimation = currentPlayerAnimation;
+      currentPlayerAnimationRepeatCounter = 0;
     }
 
   }
@@ -491,32 +491,5 @@ void loop() {
   if(currentFrame>=nFrames) {
     currentFrame = 0;
   }
-
-  /**
-   * TODO: Remove old section of code
-  unsigned char* imageToDraw;
-  if(imgSelector == 0) {
-    display.drawBitmap(0, 0,  epd_bitmap_tama0, 128, 64, BLACK);
-    imgSelector += 1;
-  }
-
-  else {
-    display.drawBitmap(0, 0,  epd_bitmap_tama1, 128, 64, BLACK);
-    imgSelector -= 1;
-  }
-
-  // Draw text
-  display.setCursor(4,4);
-  display.setTextSize(1);
-  display.setTextColor(WHITE);
-  display.println("Hello Dishi :)");
-  
-  // Print onto display
-  display.display();
-  delay(500);
-
-  // Clear display
-  display.clearDisplay();
-  */
   
 }
