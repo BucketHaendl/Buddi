@@ -7,7 +7,6 @@
 
 /**
  * MANDATORY TODO SECTION
- * TODO: Need to implement logic of having other people joined over internet (Could potentially just control them with different buttons for the moment and then add internet later, just to fix bugs that exist in current version)
  * TODO: Use scheduler and yield() to run network, buttons (user interface) and screen update in parallel
  */
 
@@ -265,7 +264,6 @@ const int actionMenuItemLabelFontSize = 1; // Font size for the label
 */
 // Networking variables
 WebSocketsClient webSocketClient;
-StaticJsonDocument<100> doc;
 
 // Joystick variables
 int lastButtonPress = 0;
@@ -274,14 +272,17 @@ int lastButtonPress = 0;
 Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, OLED_RESET);
 int imgSelector = 0; /// TODO: To be removed
 bool currentPause = false; // Whether the player is currently in the start screen or in an active session
+bool webSocketConnected = false; // Whether the WebSocket is currently connected
 
 float currentFrame = 0.0; // Counts what animation frame is currently presented, increases after every frame
 int currentPlayerAnimationRepeatCounter = 0; // Counts how many times the current animation has already been repeated for this player
 int currentOthersAnimationRepeatCounter[nMaxOthers] = {0, 0, 0}; // Counts how many times the current animation has already been repeated for other players
 
-int nCurrentOthers = 3; // Number of other players joined
 int currentPlayerLoc[nAxes] = {0, (int)(avatarWidth/2)}; // Which room the player is currently in and what his real and rendered location is. Possible values are 0 (left office), 1 (right office), 2 (garden)
 int currentOthersLocs[nMaxOthers][nAxes] = {{0, 0}, {0, 20}, {0, 40}};
+
+long currentPlayerUID = -1; // Unique user ID, generated randomly or assigned by server
+long currentOthersUIDs[nMaxOthers] = {-1, -1, -1}; // Unique user ids of other players joined
 
 int currentPlayerAvatar = 0; // Which avatar the player has currently selected
 int currentOthersAvatars[nMaxOthers] = {0, 0, 0}; // Which avatars the other players have selected
@@ -300,6 +301,269 @@ bool currentActionMenuOpen = false; // Whether or not the menu is currently open
 int currentActionMenuItemLabelSelected = 0; // Which option in the menu is selected from default
 
 /**
+ * Enum for different event types
+*/
+enum PlayerEvent 
+{
+  LOGIN = 1,
+  LOGOUT = 2,
+  LOCCHANGE = 3,
+  ANIMCHANGE = 4
+};
+
+const char* jsonEvent = "event";
+const char* jsonUID = "uid";
+const char* jsonName = "name";
+const char* jsonAvatar = "avatar";
+const char* jsonLoc = "location";
+const char* jsonLoc0 = "room";
+const char* jsonLoc1 = "position";
+const char* jsonAnim = "animation";
+
+/**
+ * JSON Package Generator
+*/
+StaticJsonDocument<1000> generateJson(PlayerEvent playerEvent) {
+
+  // Create empty JSON document
+  StaticJsonDocument<1000> doc;
+  doc[jsonUID] = currentPlayerUID;
+
+  // Populate document with information depending on event type
+  switch(playerEvent) {
+
+    case LOGIN:
+    {
+      doc[jsonEvent] = LOGIN;
+
+      doc[jsonName] = currentPlayerName;
+      doc[jsonAvatar] = currentPlayerAvatar;
+
+      JsonArray jsonLocArray = doc.createNestedArray(jsonLoc);
+      jsonLocArray.add(currentPlayerLoc[0]);
+      jsonLocArray.add(currentPlayerLoc[1]);
+
+      doc[jsonAnim] = currentPlayerAnimation;
+      break;
+    }
+
+    case LOGOUT:
+    {
+      doc[jsonEvent] = LOGOUT;
+      break;
+    }
+
+    case LOCCHANGE:
+    {
+      doc[jsonEvent] = LOCCHANGE;
+
+      JsonArray jsonLocArray = doc.createNestedArray(jsonLoc);
+      jsonLocArray.add(currentPlayerLoc[0]);
+      jsonLocArray.add(currentPlayerLoc[1]);
+      break;
+    }
+
+    case ANIMCHANGE:
+    {
+      doc[jsonEvent] = ANIMCHANGE;
+
+      doc[jsonAnim] = currentPlayerAnimation;
+      break;
+    }
+
+    default :
+      printf("[JsonGenerator] Unknown player event type %i\n", playerEvent);
+      break;
+
+  }
+
+  // Return generated JSON document
+  return doc;
+
+}
+
+/**
+ * JSON Serializer & WebSocket Sender
+*/
+void sendJson(StaticJsonDocument<1000> doc) {
+
+  if(!webSocketConnected) {
+    Serial.println("[JsonSender] No WebServer connected, will skip sending JSON");
+    return;
+  }
+
+  String jsonOutput;
+  serializeJson(doc, jsonOutput);
+
+  webSocketClient.sendTXT(jsonOutput);
+  printf("[WebSocket] SENT: %s\n", jsonOutput);
+
+}
+
+/**
+ * Assign new player id based on UID
+*/
+int assignPlayerId(long playerUID) {
+
+  // Loop over UIDs and find last free spot
+  for(int i = 0; i < nMaxOthers; i++) {
+
+    // If UID is -1, it is a free slot
+    if(currentOthersUIDs[i] == -1) {
+      currentOthersUIDs[i] = playerUID;
+      return i;
+    }
+
+  }
+
+  // If no playerId assigned, they must be all occupied at the moment
+  printf("[JsonReceiver] No more free player spots for UID %lo\n", playerUID);
+  return -1;
+
+}
+
+/**
+ * Deassign player id of UID for logout
+*/
+void deassignPlayerId(int playerId) {
+  currentOthersUIDs[playerId] = -1;
+}
+
+/**
+ * Find player based on UID
+*/
+int getPlayerId(long playerUID) {
+  
+  // Identify player based on UID by going through all players joined
+  int playerId = -1;
+  for(int i = 0; i < nMaxOthers; i++) {
+    if(currentOthersUIDs[i] == playerUID) {
+      playerId = i;
+    }
+  }
+
+  // If lookup unsuccessful, it must be a new player
+  if(playerId == -1) {
+    printf("[JsonReceiver] No player recognized with UID %lo\n", playerUID);
+  }
+
+  return playerId;
+
+}
+
+/**
+ * JSON Deserializer & WebSocket Receiver
+*/
+void receiveJson(uint8_t * payload) {
+
+  printf("[WebSocket] RECEIVED: %s\n", payload);
+
+  // Deserialize string into JSON
+  StaticJsonDocument<1000> doc;
+  DeserializationError error = deserializeJson(doc, payload);
+  if (error) {
+    Serial.print("[JsonReceiver] Deserialization error: ");
+    Serial.println(error.f_str());
+    return;
+  }
+
+  // Identify & update based on event
+  const long playerUID = doc[jsonUID];
+  int playerId = getPlayerId(playerUID);
+
+  const PlayerEvent playerEvent = doc[jsonEvent];
+  switch(playerEvent) {
+
+    case LOGIN:
+    {
+
+      // If no playerId assigned, the player is joining for the first time this session
+      if(playerId == -1) {
+        playerId = assignPlayerId(playerUID);
+        printf("[JsonReceiver] Welcome player with UID %lo\n", playerUID);
+
+        // If still no playerId assigned, there are too many players
+        if(playerId == -1) {
+          printf("[JsonReceiver] No more space for player with UID %lo\n", playerUID);
+          return;
+        }
+
+      }
+
+      // Parse login information
+      const char* playerName = doc[jsonName];
+      currentOthersNames[playerId] = playerName;
+
+      const int playerAvatar = doc[jsonAvatar];
+      currentOthersAvatars[playerId] = playerAvatar;
+
+      currentOthersLocs[playerId][0] = doc[jsonLoc][0];
+      currentOthersLocs[playerId][1] = doc[jsonLoc][1];
+
+      const int playerAnim = doc[jsonAnim];
+      currentOthersAnimation[playerId] = playerAnim;
+
+      printf("[JsonReceiver] LOGIN processed for player %i\n", playerId);
+      break;
+
+    }
+
+    case LOGOUT:
+    {
+      // If no playerId assigned, the player hasn't actually joined / was in the waiting room
+      if(playerId == -1) {
+        printf("[JsonReceiver] No logout needed for player with UID %lo\n", playerUID);
+        return;
+      }
+
+      // Complete logout event
+      deassignPlayerId(playerId);
+
+      printf("[JsonReceiver] LOGOUT processed for player %i\n", playerId);
+      break;
+    }
+
+    case LOCCHANGE:
+    {
+      // If no playerId assigned, the player hasn't actually joined / was in the waiting room
+      if(playerId == -1) {
+        printf("[JsonReceiver] No location for player with UID %lo\n", playerUID);
+        return;
+      }
+
+      // Parse location change information
+      currentOthersLocs[playerId][0] = doc[jsonLoc][0];
+      currentOthersLocs[playerId][1] = doc[jsonLoc][1];
+
+      printf("[JsonReceiver] LOCCHANGE processed for player %i\n", playerId);
+      break;
+    }
+
+    case ANIMCHANGE:
+    {
+      // If no playerId assigned, the player hasn't actually joined / was in the waiting room
+      if(playerId == -1) {
+        printf("[JsonReceiver] No animation for player with UID %lo\n", playerUID);
+        return;
+      }
+
+      // Parse animation change information
+      const int playerAnim = doc[jsonAnim];
+      currentOthersAnimation[playerId] = playerAnim;
+
+      printf("[JsonReceiver] ANIMCHANGE processed for player %i\n", playerId);
+      break;
+    }
+
+    default :
+      printf("[JsonReceiver] Unknown player event type %i\n", playerEvent);
+      return;
+
+  }
+
+} 
+
+/**
  * WEBSOCKET EVENT HANDLER FUNCTION
 */
 void onWebSocketEvent(WStype_t eventType, uint8_t * payload, size_t length) {
@@ -308,34 +572,33 @@ void onWebSocketEvent(WStype_t eventType, uint8_t * payload, size_t length) {
 
     // If WebSocket disconnected
     case WStype_DISCONNECTED:
-      Serial.println("[WebSocket] Connection is disconnected");
+      webSocketConnected = false;
+      Serial.println("[WebSocket] Disconnected");
       break;
 
     // If WebSocket connected
     case WStype_CONNECTED:
     {
+      webSocketConnected = true;
       printf("[WebSocket] Connected to %s\n", payload);
+
+      // Generate and send JSON of current information
+      StaticJsonDocument<1000> doc = generateJson(LOGIN);
+      sendJson(doc);
+
       break;
     }
 
     // If WebSocket sends text in
     case WStype_TEXT:
     {
-      printf("[WebSocket] Received text: %s\n", payload);
-
-      /// TODO: Deconstruct the JSON, parse in other players locations etc...
-      /// TODO: Also send out own actions whenever walk has occured...
-      /// TODO: Can make a case-dependent system, where events are either walk events or animation events, so we don't pass the entire thing all the time
-
+      // Receive and interpret/update information based on JSON
+      receiveJson(payload);
       break;
     }
 
-    // If WebSocket sends binary data in
+    // For all other cases, ignore
     case WStype_BIN:
-      printf("[WebSocket] Received binary data: %s\n", payload);
-      break;
-
-    // For all other cases
     case WStype_ERROR:      
     case WStype_FRAGMENT_TEXT_START:
     case WStype_FRAGMENT_BIN_START:
@@ -354,9 +617,12 @@ void setup() {
 
   // Launch debugging console
   Serial.begin(115200);
-  Serial.println("Hello");
-  //Serial.setDebugOutput(true);
+  Serial.setDebugOutput(true);
   delay(100);
+
+  // Generate unique random user ID of all possible long values
+  currentPlayerUID = rand() % 2147483647;
+  printf("[Setup] Generated player UID %lo\n", currentPlayerUID);
 
   /**
    * Network setup section
@@ -374,9 +640,6 @@ void setup() {
       Serial.print(".");
   }
   Serial.println("[WiFi] Connected successfully");
-
-  // Print local IP address in local wifi
-  printf("[Wifi] Local IP address: %s\n",WiFi.localIP());
 
   // Open WebSocket connection to WebSocket server on host, port, URL
   webSocketClient.beginSSL(host, port, url);
@@ -477,7 +740,12 @@ void loop() {
   //display.drawBitmap(currentBackgroundLoc, 0,  roomBackgrounds[currentRoom], roomWidth, roomHeight, BITMAP_COLOR);
 
   // Draw all other characters at their respective locations into room
-  for (int i = 0; i < nCurrentOthers; i++) {
+  for (int i = 0; i < nMaxOthers; i++) {
+
+    // Draw only if the avatar is assigned to a real player UID, else skip
+    if(currentOthersUIDs[i] == -1) {
+      continue;
+    }
 
     // Draw avatar only if in the current room, else skip this one
     if(!currentOthersLocs[i][0] == currentRoom) {
@@ -597,9 +865,13 @@ void loop() {
     // Execute action if middle button pressed
     if(middleButtonPressed == LOW) {
 
-      // Only change animation if not cancel (last) option was chosen
-      if(currentActionMenuItemLabelSelected < nAnimations) {
+      // Only change animation if not cancel (last) option was chosen and different
+      if(currentActionMenuItemLabelSelected < nAnimations && currentActionMenuItemLabelSelected != currentPlayerAnimation) {
         currentPlayerAnimation = currentActionMenuItemLabelSelected;
+        
+        // Generate and send JSON of changed animation
+        StaticJsonDocument<1000> doc = generateJson(ANIMCHANGE);
+        sendJson(doc);
       }
 
       currentActionMenuOpen = false;
@@ -635,9 +907,9 @@ void loop() {
       // Move actual player position
       currentPlayerLoc[1]-=walkingSpeed;
 
-      Serial.println(currentPlayerLoc[1]);
-      Serial.println(currentBackgroundLoc);
-      Serial.println(currentCameraLoc);
+      // Generate and send JSON of changed animation
+      StaticJsonDocument<1000> doc = generateJson(LOCCHANGE);
+      sendJson(doc);
 
     }
 
@@ -650,10 +922,10 @@ void loop() {
 
       // Move actual player position
       currentPlayerLoc[1]+=walkingSpeed;
-
-      Serial.println(currentPlayerLoc[1]);
-      Serial.println(currentBackgroundLoc);
-      Serial.println(currentCameraLoc);
+      
+      // Generate and send JSON of changed animation
+      StaticJsonDocument<1000> doc = generateJson(LOCCHANGE);
+      sendJson(doc);
         
     }
       
