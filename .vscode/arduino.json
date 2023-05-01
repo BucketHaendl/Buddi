@@ -1,6 +1,7 @@
 {
     "sketch": "Buddi.ino",
     "output": "build",
-    "board": "arduino:mbed_nano:nano33ble",
-    "port": "/dev/tty.usbmodem14201"
+    "board": "esp32:esp32:nodemcu-32s",
+    "port": "/dev/tty.usbserial-0001",
+    "configuration": "FlashFreq=80,UploadSpeed=921600,DebugLevel=none,EraseFlash=none"
 }

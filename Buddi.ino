@@ -36,8 +36,11 @@
 */
 // Include relevant libraries for the SSD1306-driven OLED display
 #include <Arduino.h>
+#include <ArduinoJson.h>
 #include <SPI.h>
 #include <Wire.h>
+#include <WiFi.h>
+#include <WebSocketsClient.h>
 #include <Adafruit_GFX.h>
 #include <Adafruit_SSD1306.h>
 
@@ -51,13 +54,13 @@
 #define COLOR_HIGHLIGHT BLACK // color highlight color for important information
 #define BITMAP_COLOR WHITE // background color of the bitmaps
 
-#define LEFT_BUTTON A0 // define left button
-#define MIDDLE_BUTTON A0 // define middle button
-#define RIGHT_BUTTON A0 // define right button
+#define LEFT_BUTTON 0 // define left button
+#define MIDDLE_BUTTON 0 // define middle button
+#define RIGHT_BUTTON 0 // define right button
 
-#define VRX A1 // Pin for rotary encoder, CLK pin
-#define VRY A2 // Pin for rotary encoder, DT pin
-#define SW A3 // Pin for rotary encoder, SW pin
+#define VRX 25 // Pin for rotary encoder, CLK pin
+#define VRY 33 // Pin for rotary encoder, DT pin
+#define SW 32 // Pin for rotary encoder, SW pin
 
 /**
  * BITMAP (IMAGE) DECLARATION SECTION
@@ -200,9 +203,19 @@ unsigned char epd_bitmap_tama1[CHARS_PER_BITMAP] PROGMEM = {
 /**
  * CONSTANT DECLARATION SECTION
 */
+// Create networking constants
+const char* ssid = "Harvard University";
+const char* password = "";
+
+const char* host = "socketsbay.com";
+const char* url = "/wss/v2/1/demo/";
+const int port = 443;
+
 // Create joystick constants
-const int LEFT_THRESHOLD = 200;
-const int RIGHT_THRESHOLD = 800;
+const int joystickInputBits = 4095; // Maximum possible input value for joystick
+const float joystickThresholdMargin = 0.2; // Threshhold as a factor of the maximum value
+const int joystickLeftThreshold = joystickInputBits/2-joystickThresholdMargin*joystickInputBits; // Left threshhold of the joystick, beyond which movement is recognized as left movement
+const int joystickRightThreshold = joystickInputBits/2+joystickThresholdMargin*joystickInputBits; // Right threshhold of the joystick, beyond which movement is recognized as right movement
 
 // Create game constants
 const int leftFOV = (int) SCREEN_WIDTH*0.3; // Left threshhold of character position, before the background scrolls
@@ -250,6 +263,10 @@ const int actionMenuItemLabelFontSize = 1; // Font size for the label
 /**
  * VARIABLE DECLARATION SECTION
 */
+// Networking variables
+WebSocketsClient webSocketClient;
+StaticJsonDocument<100> doc;
+
 // Joystick variables
 int lastButtonPress = 0;
 
@@ -283,17 +300,98 @@ bool currentActionMenuOpen = false; // Whether or not the menu is currently open
 int currentActionMenuItemLabelSelected = 0; // Which option in the menu is selected from default
 
 /**
+ * WEBSOCKET EVENT HANDLER FUNCTION
+*/
+void onWebSocketEvent(WStype_t eventType, uint8_t * payload, size_t length) {
+
+  switch(eventType) {
+
+    // If WebSocket disconnected
+    case WStype_DISCONNECTED:
+      Serial.println("[WebSocket] Connection is disconnected");
+      break;
+
+    // If WebSocket connected
+    case WStype_CONNECTED:
+    {
+      printf("[WebSocket] Connected to %s\n", payload);
+      break;
+    }
+
+    // If WebSocket sends text in
+    case WStype_TEXT:
+    {
+      printf("[WebSocket] Received text: %s\n", payload);
+
+      /// TODO: Deconstruct the JSON, parse in other players locations etc...
+      /// TODO: Also send out own actions whenever walk has occured...
+      /// TODO: Can make a case-dependent system, where events are either walk events or animation events, so we don't pass the entire thing all the time
+
+      break;
+    }
+
+    // If WebSocket sends binary data in
+    case WStype_BIN:
+      printf("[WebSocket] Received binary data: %s\n", payload);
+      break;
+
+    // For all other cases
+    case WStype_ERROR:      
+    case WStype_FRAGMENT_TEXT_START:
+    case WStype_FRAGMENT_BIN_START:
+    case WStype_FRAGMENT:
+    case WStype_FRAGMENT_FIN:
+      break;
+
+  }
+
+}
+
+/**
  * SETUP FUNCTION
 */
 void setup() {
 
   // Launch debugging console
-  Serial.begin(9600, NULL);
-  
+  Serial.begin(115200);
+  Serial.println("Hello");
+  //Serial.setDebugOutput(true);
+  delay(100);
+
+  /**
+   * Network setup section
+  */
+  Serial.print("[Wifi] Connecting to network ");
+  Serial.println(ssid);
+
+  // Reset wifi board
+  WiFi.disconnect();
+  WiFi.begin(ssid, password);
+
+  // Connect to local wifi
+  while (WiFi.status() != WL_CONNECTED) {
+      delay(500);
+      Serial.print(".");
+  }
+  Serial.println("[WiFi] Connected successfully");
+
+  // Print local IP address in local wifi
+  printf("[Wifi] Local IP address: %s\n",WiFi.localIP());
+
+  // Open WebSocket connection to WebSocket server on host, port, URL
+  webSocketClient.beginSSL(host, port, url);
+  webSocketClient.setReconnectInterval(500);
+
+  // Add event listener to WebSocket connection
+  webSocketClient.onEvent(onWebSocketEvent);
+
+  /**
+   * Peripherals setup section
+  */
   // Try to initialize screen object under given screen address, block if unsuccessful
   if(!display.begin(SSD1306_SWITCHCAPVCC, SCREEN_ADDRESS)) {
 
-    Serial.println("Error: Display could not be found");
+    Serial.println("[Setup] Error: Display could not be found");
     for(;;);
 
   }
@@ -319,7 +417,13 @@ void setup() {
 void loop() {
 
   /**
-   * Read button input section
+   * Networking section
+  */
+  // Keep WebSocket client connection alive and check for events
+  webSocketClient.loop();
+
+  /**
+   * Button input section
   */
   // Check if any buttons are currently pressed
   int leftButtonPressed = HIGH;//digitalRead(LEFT_BUTTON);
@@ -334,13 +438,13 @@ void loop() {
     bool buttonPressed = false;
 
     // If walking to right
-    if(yValue <= LEFT_THRESHOLD) {
+    if(yValue <= joystickLeftThreshold) {
       rightButtonPressed = LOW;
       buttonPressed = true;
     }
 
     // If walking to left
-    else if(yValue >= RIGHT_THRESHOLD) {
+    else if(yValue >= joystickRightThreshold) {
       leftButtonPressed = LOW;
       buttonPressed = true;
     }
@@ -525,14 +629,11 @@ void loop() {
 
       // If player moving beyond left FOV, move background (parallax) layer (unless already at end of room)
       if(currentPlayerLoc[1] < leftFOV+currentCameraLoc && currentBackgroundLoc < 0) {
-        currentBackgroundLoc+=(int)(walkingSpeed*parallaxFactor);
-        currentPlayerLoc[1]-=walkingSpeed;
+        currentBackgroundLoc+=(int)(walkingSpeed*parallaxFactor); 
       }
 
-      // Otherwise, move the player position left on the screen
-      else {
-        currentPlayerLoc[1]-=walkingSpeed;
-      }
+      // Move actual player position
+      currentPlayerLoc[1]-=walkingSpeed;
 
       Serial.println(currentPlayerLoc[1]);
       Serial.println(currentBackgroundLoc);
@@ -545,13 +646,10 @@ void loop() {
       // If player moving beyond right FOV, move background (parallax) layer (unless already at end of room)
       if(currentPlayerLoc[1] > rightFOV+currentCameraLoc && currentBackgroundLoc > SCREEN_WIDTH-roomSizes[currentPlayerLoc[0]]) {
         currentBackgroundLoc-=(int)(walkingSpeed*parallaxFactor);
-        currentPlayerLoc[1]+=walkingSpeed;
       }
 
-      // Otherwise, move player position right on screen
-      else {
-        currentPlayerLoc[1]+=walkingSpeed;
-      }
+      // Move actual player position
+      currentPlayerLoc[1]+=walkingSpeed;
 
       Serial.println(currentPlayerLoc[1]);
       Serial.println(currentBackgroundLoc);
