@@ -8,11 +8,25 @@
 /**
  * MANDATORY TODO SECTION
  * TODO: Need to implement logic of having other people joined over internet (Could potentially just control them with different buttons for the moment and then add internet later, just to fix bugs that exist in current version)
+ * TODO: Use scheduler and yield() to run network, buttons (user interface) and screen update in parallel
+ */
+
+/**
+ * DESIGN TODO SECTION
+ * TODO: Change avatar size to 42x42 (instead of full screen)
+ * TODO: Enable character rendering again
+ * TODO: Enable character rendering of other characters again
+ * TODO: Enable background rendering again
+ * TODO: Enable foreground rendering again
+ * TOOD: Remove rotary encoder, unless I want to use it instead of buttons, and change button pin definitions
 */
 
 /**
  * OPTIONAL TODO SECTION
- * TODO: Do we still need the room locations for walking if we let users sub-step / walk freely wherever they want to move?
+ * TODO: No network connection error screen & handling...just you yourself appears & you can reset?...or just a network connection screen at beginning
+ * TODO: Error / abort display when setup fails and ask to reset
+ * TODO: Maybe implement that we can controll the other characters
+ * TODO: Also implement high five and ducking with joystick (just for fun)
  * TODO: Arrange more object oriented, create separate classes for objects (Room, should have background, foreground...Character, should have avatar, actionPlaying, etc...)
  * TODO: Add floating messages tags, like "Dishi sends you flowers, etc" or like a broadcast (maybe just for accessibility)
 */
@@ -21,6 +35,7 @@
  * INCLUDE LIBRARY & DEFINITION SECTION
 */
 // Include relevant libraries for the SSD1306-driven OLED display
+#include <Arduino.h>
 #include <SPI.h>
 #include <Wire.h>
 #include <Adafruit_GFX.h>
@@ -34,10 +49,15 @@
 #define CHARS_PER_BITMAP 1024 // number of chars in PROGMEM per bitmap image
 #define COLOR_MODE WHITE // color theme of the on-screen objects
 #define COLOR_HIGHLIGHT BLACK // color highlight color for important information
+#define BITMAP_COLOR WHITE // background color of the bitmaps
 
-const int LEFT_BUTTON = 0; // define left button
-const int MIDDLE_BUTTON = 0; // define middle button
-const int RIGHT_BUTTON = 0; // define right button
+#define LEFT_BUTTON A0 // define left button
+#define MIDDLE_BUTTON A0 // define middle button
+#define RIGHT_BUTTON A0 // define right button
+
+#define VRX A1 // Pin for rotary encoder, CLK pin
+#define VRY A2 // Pin for rotary encoder, DT pin
+#define SW A3 // Pin for rotary encoder, SW pin
 
 /**
  * BITMAP (IMAGE) DECLARATION SECTION
@@ -180,72 +200,79 @@ unsigned char epd_bitmap_tama1[CHARS_PER_BITMAP] PROGMEM = {
 /**
  * CONSTANT DECLARATION SECTION
 */
-// Create OLED display object with given constraints
-Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, OLED_RESET);
+// Create joystick constants
+const int LEFT_THRESHOLD = 200;
+const int RIGHT_THRESHOLD = 800;
 
 // Create game constants
-const int nAxes = 2; // Number of axes to fully describe a location, here 2 (room number and location in the room)
+const int leftFOV = (int) SCREEN_WIDTH*0.3; // Left threshhold of character position, before the background scrolls
+const int rightFOV = (int) SCREEN_WIDTH*0.7; // Right threshhold of character position, before the background scrolls
+const float parallaxFactor = 0.5; // Factor by which the frame scroll (parallax) of the background will be slowed down.
+
+const int nAxes = 2; // Number of axes to fully describe a location, here 2 (room number and real location in the room)
 const int nRooms = 3; // Number of rooms (0 = left office, 1 = right office, 2 = garden)
+const int roomSizes[nRooms] = {200, 200, 200}; // Sizes (x-dimensions) of rooms, for parallax scrolling across the background (use sizes larger than the screen size)
 const unsigned char* roomBackgrounds[nRooms] = {epd_bitmap_tama0, epd_bitmap_tama0, epd_bitmap_tama0}; // Define backgrounds for each room (drawn behind player), because these are actually pointers at this point
 const unsigned char* roomForegrounds[nRooms] = {epd_bitmap_tama0, epd_bitmap_tama0, epd_bitmap_tama0}; // Define foregrounds for each room (drawn on top of player), because these are actually pointers at this point
 
-const int nLocsPerRoom = 3; // Number of distinct player locations you can walk to per room (0 = left, 1 = middle, 2 = right, per each room)
 const int roomWidth = SCREEN_WIDTH; // Width of a room frame
 const int roomHeight = SCREEN_HEIGHT; // Heigth of a room frame
-const int playerRoomLocs[nRooms][nLocsPerRoom] = {{10, 20, 30}, {10, 20, 30}, {10, 20, 30}}; // x locations player can walk to
-const int othersRoomLocs[nRooms][nLocsPerRoom] = {{10, 20, 30}, {10, 20, 30}, {10, 20, 30}}; // x locations other players are spawned at or presented in
+const int nameWidth = 20; // Width of the name
 const int othersRoomLocsOffset = -10; // x offset each other player at same location is added at
 
 const int nAvatars = 4; // Number of avatars possible in the game
 const int playerAvatarYOffset = 0; // Offset in frame from y axis of own player
 const int othersAvatarYOffset = 10; // Offset in frame from y axis of other players
-const int avatarWidth = 42; // Width of an avatar frame
-const int avatarHeigth = 42; // Height of an avatar frame
+const int avatarWidth = 128; // Width of an avatar frame
+const int avatarHeigth = 64; // Height of an avatar frame
 const unsigned char* allAvatars[nAvatars] = {epd_bitmap_tama0, epd_bitmap_tama0, epd_bitmap_tama0, epd_bitmap_tama0}; // Base avatar characters
 
 const int animationSpeed = 50; // Screen is refreshed every x milliseconds (implemented as a delay at the end of the main loop)
-const short frameSpeed = 0.1; // Relative frame speed (sub-stepping of animation speed), so every loop, the frame counter is increased by x. This makes it possible to advance the frame counter slowly while allowing for faster animations (like walking or not blocking the menu)
-const short walkingSpeed = 0.1; // Relative walking speed while holding down button
+const float frameSpeed = 0.1; // Relative frame speed (sub-stepping of animation speed), so every loop, the frame counter is increased by x. This makes it possible to advance the frame counter slowly while allowing for faster animations (like walking or not blocking the menu)
+const float walkingSpeed = 4; // Relative walking speed while holding down button. NOTE: walkingSpeed*parallaxFactor MUST be a full (int) number
 const int nFrames = 2; // Number of frames an animation consists of
 const int nAnimations = 2; // Number of animations implemented in current version
 const int nMaxRepetitions = 3; // How many times non-repetitive animations are being repeated
-const unsigned char* workingAnimation[nAvatars][nFrames] = {{epd_bitmap_tama0, epd_bitmap_tama0},{epd_bitmap_tama0, epd_bitmap_tama0},{epd_bitmap_tama0, epd_bitmap_tama0},{epd_bitmap_tama0, epd_bitmap_tama0}}; // Frames of working animation of all avatars
-const unsigned char* flowersAnimation[nAvatars][nFrames] = {{epd_bitmap_tama0, epd_bitmap_tama0},{epd_bitmap_tama0, epd_bitmap_tama0},{epd_bitmap_tama0, epd_bitmap_tama0},{epd_bitmap_tama0, epd_bitmap_tama0}}; // Frames of giving flowers animation of all avatars
+const unsigned char* workingAnimation[nAvatars][nFrames] = {{epd_bitmap_tama0, epd_bitmap_tama1},{epd_bitmap_tama0, epd_bitmap_tama1},{epd_bitmap_tama0, epd_bitmap_tama1},{epd_bitmap_tama0, epd_bitmap_tama1}}; // Frames of working animation of all avatars
+const unsigned char* flowersAnimation[nAvatars][nFrames] = {{epd_bitmap_tama0, epd_bitmap_tama1},{epd_bitmap_tama0, epd_bitmap_tama1},{epd_bitmap_tama0, epd_bitmap_tama1},{epd_bitmap_tama0, epd_bitmap_tama1}}; // Frames of giving flowers animation of all avatars
 const unsigned char* (*allAnimations[nAnimations])[nAvatars][nFrames] = {&workingAnimation, &flowersAnimation}; // Animation look up array
 const bool repeatTypeAnimations[nAnimations] = {true, false}; // Whether the type of animation is a repeat one or execute once
 
 const int nMaxOthers = 3; // Maximum number of other players
 const int nMaxOthersPerLoc = 3; // Maximum number of other players per location
 
-const int nameWidth = 24; // Width of the name initials rectangle above characters' heads
-const int nameHeight = 24; // Height of the name initials rectangle above characters' heads
-
 const int nActionMenuItemLabels = 3; // Total number of menu items in the action menu
-const String actionMenuItemLabels[nActionMenuItemLabels] = {"Work", "Give Flowers", "Cancel"}; // String labels for each action item
-const int actionMenuItemLabelHeight = 32; // Number of pixels each action item is high
+const String actionMenuItemLabels[nActionMenuItemLabels] = {"Work", "Flowers", "Cancel"}; // String labels for each action item
+const int actionMenuItemLabelHeight = 12; // Number of pixels each action item is high
 const int actionMenuItemLabelMargin = 4; // Margin to the screen for each action menu item
 const int actionMenuItemLabelFontSize = 1; // Font size for the label
 
 /**
  * VARIABLE DECLARATION SECTION
 */
+// Joystick variables
+int lastButtonPress = 0;
+
+// Create OLED display object with given constraints
+Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, OLED_RESET);
 int imgSelector = 0; /// TODO: To be removed
 bool currentPause = false; // Whether the player is currently in the start screen or in an active session
 
-int currentFrame = 0; // Counts what animation frame is currently presented, increases after every frame
+float currentFrame = 0.0; // Counts what animation frame is currently presented, increases after every frame
 int currentPlayerAnimationRepeatCounter = 0; // Counts how many times the current animation has already been repeated for this player
 int currentOthersAnimationRepeatCounter[nMaxOthers] = {0, 0, 0}; // Counts how many times the current animation has already been repeated for other players
 
-int nCurrentOthers = 0; // Number of other players joined
-int currentPlayerLoc[nAxes] = {0, 0}; // Which room the player is currently in. Possible values are 0 (left office), 1 (right office), 2 (garden)
-int currentOthersLocs[nMaxOthers][nAxes] = {{0, 0}, {0, 0}, {0, 0}};
+int nCurrentOthers = 3; // Number of other players joined
+int currentPlayerLoc[nAxes] = {0, (int)(avatarWidth/2)}; // Which room the player is currently in and what his real and rendered location is. Possible values are 0 (left office), 1 (right office), 2 (garden)
+int currentOthersLocs[nMaxOthers][nAxes] = {{0, 0}, {0, 20}, {0, 40}};
 
 int currentPlayerAvatar = 0; // Which avatar the player has currently selected
 int currentOthersAvatars[nMaxOthers] = {0, 0, 0}; // Which avatars the other players have selected
 
-String currentPlayerName = ""; // Name initials of the current player
-String currentOthersNames[nMaxOthers] = {"", "", ""}; // Name initials of the current player
+String currentPlayerName = "Cedi"; // Name initials of the current player
+String currentOthersNames[nMaxOthers] = {"Jon", "Ana", "Dishi"}; // Name initials of the current player
 
+int currentBackgroundLoc = 0; // Current location of the background the player is currently in (for rendering)
 int currentPlayerAnimation = 0; // Which animation the player is currently executing
 int currentPlayerPreviousAnimation = 0; // Which looped animation was executing before
 
@@ -258,8 +285,7 @@ int currentActionMenuItemLabelSelected = 0; // Which option in the menu is selec
 /**
  * SETUP FUNCTION
 */
-void setup()
-{
+void setup() {
 
   // Launch debugging console
   Serial.begin(9600, NULL);
@@ -272,13 +298,18 @@ void setup()
 
   }
 
+  // Clear the display and buffer
+  display.clearDisplay();
+
+  // Set encoder pins as input pins
+  pinMode(VRX, INPUT);
+  pinMode(VRY, INPUT);
+  pinMode(SW, INPUT_PULLUP);
+
   // Define pin modes
   pinMode(LEFT_BUTTON, INPUT_PULLUP);
   pinMode(MIDDLE_BUTTON, INPUT_PULLUP);
   pinMode(RIGHT_BUTTON, INPUT_PULLUP);
-
-  // Clear the display and buffer
-  display.clearDisplay();
   
 }
 
@@ -287,13 +318,59 @@ void setup()
 */
 void loop() {
 
+  /**
+   * Read button input section
+  */
+  // Check if any buttons are currently pressed
+  int leftButtonPressed = HIGH;//digitalRead(LEFT_BUTTON);
+  int middleButtonPressed = HIGH;//digitalRead(MIDDLE_BUTTON);
+  int rightButtonPressed = HIGH;//digitalRead(RIGHT_BUTTON);
+
+  if (millis() - lastButtonPress > 200) {
+
+    // Read the y position of the joystick
+    int yValue = analogRead(VRY);
+    int btnState = digitalRead(SW);
+    bool buttonPressed = false;
+
+    // If walking to right
+    if(yValue <= LEFT_THRESHOLD) {
+      rightButtonPressed = LOW;
+      buttonPressed = true;
+    }
+
+    // If walking to left
+    else if(yValue >= RIGHT_THRESHOLD) {
+      leftButtonPressed = LOW;
+      buttonPressed = true;
+    }
+
+    // If center button pressed
+    else if(btnState == LOW) {
+      middleButtonPressed = LOW;
+      buttonPressed = true;
+    }
+
+    // Remember last button press event
+    if(buttonPressed) {
+      lastButtonPress = millis();
+    }
+
+  }
+
+  /**
+   * Game output section
+  */
   // Clear the display and buffer
   display.clearDisplay();
 
   // Draw background of current room
   int currentRoom = currentPlayerLoc[0];
   int currentLoc = currentPlayerLoc[1];
-  display.drawBitmap(0, 0,  roomBackgrounds[currentRoom], roomWidth, roomHeight, COLOR_MODE);
+  int currentCameraLoc = -(int)(currentBackgroundLoc/parallaxFactor);
+
+  display.drawRect(currentBackgroundLoc, 0, roomSizes[currentRoom], roomHeight, WHITE);
+  //display.drawBitmap(currentBackgroundLoc, 0,  roomBackgrounds[currentRoom], roomWidth, roomHeight, BITMAP_COLOR);
 
   // Draw all other characters at their respective locations into room
   for (int i = 0; i < nCurrentOthers; i++) {
@@ -307,15 +384,15 @@ void loop() {
     int otherAvatarAnimation = currentOthersAnimation[i]; // Select other player's current animation
 
     // Draw other avatar with respective animation
-    int otherAvatarCalculatedX = othersRoomLocs[currentRoom][currentOthersLocs[i][1]]+othersRoomLocsOffset*i;
-    display.drawBitmap(otherAvatarCalculatedX, othersAvatarYOffset, (*allAnimations[otherAvatarAnimation])[otherAvatar][currentFrame], avatarWidth, avatarHeigth, COLOR_MODE);
+    int otherAvatarRenderX = -currentCameraLoc+currentOthersLocs[i][1]-(int)(avatarWidth/2);
+    //display.drawBitmap(otherAvatarRenderX, othersAvatarYOffset, (*allAnimations[otherAvatarAnimation])[otherAvatar][(int)currentFrame], avatarWidth, avatarHeigth, BITMAP_COLOR);
 
     // Draw other name initials above the avatar in a blanc rectangle
     String otherName = currentOthersNames[i];
-    display.drawRect(otherAvatarCalculatedX, othersAvatarYOffset, nameWidth, nameHeight, COLOR_HIGHLIGHT);
-    display.setCursor(otherAvatarCalculatedX, othersAvatarYOffset);
+    display.setCursor(otherAvatarRenderX+(int)(avatarWidth/2)+(int)(-nameWidth/2), othersAvatarYOffset);
     display.setTextSize(1);
-    display.setTextColor(COLOR_MODE);
+    display.setTextWrap(false);
+    display.setTextColor(WHITE, BLACK);
     display.println(otherName);
 
     // Determine whether animation will be repeated again or not
@@ -344,14 +421,14 @@ void loop() {
   }
 
   // Draw own player's avatar with animation in current frame
-  int playerAvatarCalculatedX = playerRoomLocs[currentRoom][currentLoc];
-  display.drawBitmap(playerAvatarCalculatedX, playerAvatarYOffset,  (*allAnimations[currentPlayerAnimation])[currentPlayerAvatar][currentFrame], avatarWidth, avatarHeigth, COLOR_MODE);
+  int playerAvatarRenderX = currentLoc-(int)(avatarWidth/2)-currentCameraLoc;
+  //display.drawBitmap(playerAvatarRenderX, playerAvatarYOffset, (*allAnimations[currentPlayerAnimation])[currentPlayerAvatar][(int)currentFrame], avatarWidth, avatarHeigth, BITMAP_COLOR);
 
   // Draw own player's name initials above the avatar in a blanc rectangle
-  display.drawRect(playerAvatarCalculatedX, playerAvatarYOffset, nameWidth, nameHeight, COLOR_HIGHLIGHT);
-  display.setCursor(playerAvatarCalculatedX, playerAvatarYOffset);
+  display.setCursor(playerAvatarRenderX+(int)(avatarWidth/2)+(int)(-nameWidth/2), playerAvatarYOffset);
   display.setTextSize(1);
-  display.setTextColor(COLOR_MODE);
+  display.setTextWrap(false);
+  display.setTextColor(WHITE, BLACK);
   display.println(currentPlayerName);
 
   // Determine whether animation will be repeated again or not
@@ -378,27 +455,29 @@ void loop() {
   }
 
   // Draw foreground of current room
-  display.drawBitmap(0, 0,  roomForegrounds[currentRoom], roomWidth, roomHeight, COLOR_MODE);
+  display.fillRect(-currentCameraLoc+60, 44, 20, 20, BLACK);
+  display.fillRect(-currentCameraLoc+150, 44, 20, 20, BLACK);
+  // display.drawBitmap(0, 0,  roomForegrounds[currentRoom], roomWidth, roomHeight, BITMAP_COLOR);
   
   // Draw section for or action menu
   if(currentActionMenuOpen) {
 
     // Draw the action menu rectangle
-    display.drawRect(0, 0, SCREEN_WIDTH, actionMenuItemLabelHeight*nActionMenuItemLabels, COLOR_MODE);
+    display.fillRect(0, 0, SCREEN_WIDTH, actionMenuItemLabelHeight*nActionMenuItemLabels, BLACK);
     
     for(int i = 0; i < nActionMenuItemLabels; i++) {
       
-      display.setCursor(actionMenuItemLabelMargin, actionMenuItemLabelMargin);
+      display.setCursor(actionMenuItemLabelMargin, actionMenuItemLabelMargin+i*actionMenuItemLabelHeight);
       display.setTextSize(actionMenuItemLabelFontSize);
       
       // If this menu item is currently selected, highlight it
       if(currentActionMenuItemLabelSelected == i) {
-        display.setTextColor(COLOR_HIGHLIGHT);
+        display.setTextColor(BLACK, WHITE);
       }
 
       // Otherwise, just keep it as it is
       else {
-        display.setTextColor(COLOR_MODE);
+        display.setTextColor(WHITE);
       }
       
       // Draw the action menu item
@@ -408,17 +487,17 @@ void loop() {
 
   }
 
-  // Check if any buttons are currently pressed
-  int leftButtonPressed = digitalRead(LEFT_BUTTON);
-  int middleButtonPressed = digitalRead(MIDDLE_BUTTON);
-  int rightButtonPressed = digitalRead(RIGHT_BUTTON);
-
   // If action menu is currently open, the following will be checked to determine button interpretation
   if(currentActionMenuOpen) {
 
     // Execute action if middle button pressed
     if(middleButtonPressed == LOW) {
-      currentPlayerAnimation = currentActionMenuItemLabelSelected;
+
+      // Only change animation if not cancel (last) option was chosen
+      if(currentActionMenuItemLabelSelected < nAnimations) {
+        currentPlayerAnimation = currentActionMenuItemLabelSelected;
+      }
+
       currentActionMenuOpen = false;
     }
 
@@ -443,13 +522,43 @@ void loop() {
 
     // Move to next or previous location if side buttons pressed
     else if(leftButtonPressed == LOW) {
-      currentPlayerLoc[1]-=walkingSpeed;
+
+      // If player moving beyond left FOV, move background (parallax) layer (unless already at end of room)
+      if(currentPlayerLoc[1] < leftFOV+currentCameraLoc && currentBackgroundLoc < 0) {
+        currentBackgroundLoc+=(int)(walkingSpeed*parallaxFactor);
+        currentPlayerLoc[1]-=walkingSpeed;
+      }
+
+      // Otherwise, move the player position left on the screen
+      else {
+        currentPlayerLoc[1]-=walkingSpeed;
+      }
+
+      Serial.println(currentPlayerLoc[1]);
+      Serial.println(currentBackgroundLoc);
+      Serial.println(currentCameraLoc);
+
     }
 
     else if(rightButtonPressed == LOW) {
-      currentPlayerLoc[1]+=walkingSpeed;
-    }
 
+      // If player moving beyond right FOV, move background (parallax) layer (unless already at end of room)
+      if(currentPlayerLoc[1] > rightFOV+currentCameraLoc && currentBackgroundLoc > SCREEN_WIDTH-roomSizes[currentPlayerLoc[0]]) {
+        currentBackgroundLoc-=(int)(walkingSpeed*parallaxFactor);
+        currentPlayerLoc[1]+=walkingSpeed;
+      }
+
+      // Otherwise, move player position right on screen
+      else {
+        currentPlayerLoc[1]+=walkingSpeed;
+      }
+
+      Serial.println(currentPlayerLoc[1]);
+      Serial.println(currentBackgroundLoc);
+      Serial.println(currentCameraLoc);
+        
+    }
+      
   }
 
   // Display current frame
@@ -457,23 +566,33 @@ void loop() {
   delay(animationSpeed);
 
   // Fix outside bounds for player location
-  if(currentPlayerLoc[1] >= nLocsPerRoom) {
+  if(currentPlayerLoc[1] > 2*roomSizes[currentPlayerLoc[0]]-SCREEN_WIDTH) {
+    Serial.println("Next room");
     currentPlayerLoc[0]+=1;
     currentPlayerLoc[1] = 0;
+    currentBackgroundLoc = 0;
   }
 
   else if(currentPlayerLoc[1] < 0) {
+    Serial.println("Previous room");
     currentPlayerLoc[0]-=1;
-    currentPlayerLoc[1] = nLocsPerRoom-1;
+    currentPlayerLoc[1] = 2*roomSizes[currentPlayerLoc[0]]-SCREEN_WIDTH;
+    currentBackgroundLoc = SCREEN_WIDTH-roomSizes[currentPlayerLoc[0]];
   }
 
   // Fix outside bounds for player room
   if(currentPlayerLoc[0] >= nRooms) {
+    Serial.println("Already last room");
     currentPlayerLoc[0] = nRooms-1;
+    currentPlayerLoc[1] = 2*roomSizes[currentPlayerLoc[0]]-SCREEN_WIDTH;
+    currentBackgroundLoc = SCREEN_WIDTH-roomSizes[currentPlayerLoc[0]];
   }
 
-  else if(currentPlayerLoc[0] < -1) {
+  else if(currentPlayerLoc[0] < 0) {
+    Serial.println("Already first room");
     currentPlayerLoc[0] = 0;
+    currentPlayerLoc[1] = 0;
+    currentBackgroundLoc = 0;
   }
 
   // Fix outside bounds for menu item selected
